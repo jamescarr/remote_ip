@@ -131,6 +131,33 @@ defmodule RemoteIp.OptionsTest do
       assert Keyword.has_key?(packed, :parsers)
       assert Keyword.has_key?(packed, :proxies)
     end
+
+    test ":strategy default" do
+      packed = RemoteIp.Options.pack([])
+      assert packed[:strategy] == {RemoteIp.Strategies.RightmostNonPrivate, []}
+      assert Keyword.has_key?(packed, :headers)
+      assert Keyword.has_key?(packed, :parsers)
+      assert Keyword.has_key?(packed, :proxies)
+      assert Keyword.has_key?(packed, :clients)
+    end
+
+    test ":strategy module" do
+      strategy = RemoteIp.Strategies.LeftmostNonPrivate
+      packed = RemoteIp.Options.pack(strategy: strategy)
+      assert packed[:strategy] == {strategy, []}
+    end
+
+    test ":strategy tuple" do
+      opts = [header: "x-forwarded-for", count: 2]
+      strategy = {RemoteIp.Strategies.RightmostTrustedCount, opts}
+      packed = RemoteIp.Options.pack(strategy: strategy)
+      assert packed[:strategy] == strategy
+    end
+
+    test ":strategy mfa" do
+      packed = RemoteIp.Options.pack(strategy: {MFA, :get, [:strategy]})
+      assert packed[:strategy] == {MFA, :get, [:strategy]}
+    end
   end
 
   describe "unpack" do
@@ -235,6 +262,75 @@ defmodule RemoteIp.OptionsTest do
       unpacked = RemoteIp.Options.unpack(packed)
       assert [%RemoteIp.Block{} = block] = unpacked[:clients]
       assert to_string(block) == "234.0.0.0/8"
+    end
+
+    test ":strategy default" do
+      packed = RemoteIp.Options.pack([])
+      unpacked = RemoteIp.Options.unpack(packed)
+      assert unpacked[:strategy] == packed[:strategy]
+    end
+
+    test ":strategy module" do
+      packed = RemoteIp.Options.pack(strategy: RemoteIp.Strategies.LeftmostNonPrivate)
+      unpacked = RemoteIp.Options.unpack(packed)
+      assert unpacked[:strategy] == {RemoteIp.Strategies.LeftmostNonPrivate, []}
+    end
+
+    test ":strategy tuple" do
+      opts = [header: "x-forwarded-for"]
+      strategy = {RemoteIp.Strategies.RightmostTrustedRange, opts}
+      packed = RemoteIp.Options.pack(strategy: strategy)
+      unpacked = RemoteIp.Options.unpack(packed)
+      assert unpacked[:strategy] == strategy
+    end
+
+    test ":strategy mfa" do
+      packed = RemoteIp.Options.pack(strategy: {MFA, :get, [:strategy]})
+
+      MFA.put(:strategy, RemoteIp.Strategies.LeftmostNonPrivate)
+      unpacked = RemoteIp.Options.unpack(packed)
+      assert unpacked[:strategy] == {RemoteIp.Strategies.LeftmostNonPrivate, []}
+
+      strategy = {RemoteIp.Strategies.RightmostTrustedCount, header: "x-forwarded-for"}
+      MFA.put(:strategy, strategy)
+      unpacked = RemoteIp.Options.unpack(packed)
+      assert unpacked[:strategy] == strategy
+    end
+  end
+
+  describe ":strategy validation" do
+    test "rejects a value that isn't a module or {module, opts}" do
+      assert_raise ArgumentError, ~r/expected a strategy module/, fn ->
+        RemoteIp.Options.pack(strategy: "nope")
+      end
+    end
+
+    test "rejects plug-wide options nested inside the strategy tuple" do
+      strategy = {
+        RemoteIp.Strategies.RightmostTrustedRange,
+        header: "x-forwarded-for", proxies: ["1.2.3.0/24"]
+      }
+
+      assert_raise ArgumentError, ~r/plug-wide options/, fn ->
+        RemoteIp.Options.pack(strategy: strategy)
+      end
+    end
+
+    test "rejects a strategy-specific failure, e.g. a non-positive :count" do
+      strategy = {RemoteIp.Strategies.RightmostTrustedCount, header: "x-forwarded-for", count: 0}
+
+      assert_raise ArgumentError, ~r/positive integer/, fn ->
+        RemoteIp.Options.pack(strategy: strategy)
+      end
+    end
+
+    test "raised on first use of an MFA-sourced strategy, not at pack time" do
+      packed = RemoteIp.Options.pack(strategy: {MFA, :get, [:strategy]})
+      MFA.put(:strategy, {RemoteIp.Strategies.SingleIpHeader, []})
+
+      assert_raise ArgumentError, ~r/requires a :header/, fn ->
+        RemoteIp.Options.unpack(packed)
+      end
     end
   end
 end

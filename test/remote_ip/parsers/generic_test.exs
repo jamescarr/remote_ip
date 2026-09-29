@@ -151,4 +151,18 @@ defmodule RemoteIp.Parsers.GenericTest do
       assert [{127, 0, 0, 1}, {0, 0, 0, 0, 0, 0, 0, 1}] == Generic.parse("\s\t\s\t127.0.0.1\t\t\s\s,\s\t\t\s::1\t")
     end
   end
+
+  describe "parse_ip/1" do
+    test "rejects a comma-separated value (it is not split)" do
+      assert {:error, _} = Generic.parse_ip("1.2.3.4, 5.6.7.8")
+    end
+
+    test "rejects an ip with a port" do
+      assert {:error, _} = Generic.parse_ip("1.2.3.4:8080")
+    end
+
+    test "rejects an empty string" do
+      assert {:error, _} = Generic.parse_ip("")
+    end
+  end
 end

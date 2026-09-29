@@ -556,6 +556,78 @@ defmodule RemoteIpTest do
     end
   end
 
+  describe ":strategy option" do
+    test "defaults to the rightmost non-private strategy" do
+      head = [{"x-forwarded-for", "1.2.3.4, 10.0.0.1"}]
+      assert RemoteIp.from(head) == {1, 2, 3, 4}
+    end
+
+    test "can be a bare module" do
+      head = [{"x-forwarded-for", "10.0.0.1, 2.3.4.5"}]
+      opts = [strategy: RemoteIp.Strategies.LeftmostNonPrivate, headers: ~w[x-forwarded-for]]
+      assert RemoteIp.from(head, opts) == {2, 3, 4, 5}
+    end
+
+    test "can be a {module, options} tuple" do
+      head = [{"x-forwarded-for", "1.2.3.4, 10.0.0.1, 10.0.0.2"}]
+      strategy = {RemoteIp.Strategies.RightmostTrustedCount, header: "x-forwarded-for", count: 2}
+      assert RemoteIp.from(head, strategy: strategy) == {10, 0, 0, 1}
+    end
+
+    test "resolves X-Forwarded-For behind a public-IP proxy with trusted ranges" do
+      head = [{"x-forwarded-for", "1.1.1.1, 2.2.2.2, 103.21.244.1"}]
+
+      opts = [
+        strategy: {RemoteIp.Strategies.RightmostTrustedRange, header: "x-forwarded-for"},
+        proxies: ~w[103.21.244.0/22]
+      ]
+
+      assert RemoteIp.from(head, opts) == {2, 2, 2, 2}
+    end
+
+    test "chains strategies in order" do
+      opts = [
+        strategy:
+          {RemoteIp.Strategies.Chain,
+           strategies: [
+             {RemoteIp.Strategies.SingleIpHeader, header: "x-real-ip"},
+             {RemoteIp.Strategies.RightmostNonPrivate, header: "x-forwarded-for"}
+           ]}
+      ]
+
+      assert RemoteIp.from([{"x-real-ip", "9.9.9.9"}], opts) == {9, 9, 9, 9}
+      assert RemoteIp.from([{"x-forwarded-for", "2.3.4.5"}], opts) == {2, 3, 4, 5}
+    end
+
+    test "rewrites remote_ip through the plug" do
+      peer = {127, 0, 0, 1}
+      head = [{"x-forwarded-for", "1.1.1.1, 2.2.2.2, 103.21.244.1"}]
+      conn = %Plug.Conn{remote_ip: peer, req_headers: head}
+
+      opts = [
+        strategy: {RemoteIp.Strategies.RightmostTrustedRange, header: "x-forwarded-for"},
+        proxies: ~w[103.21.244.0/22]
+      ]
+
+      assert call(conn, opts).remote_ip == {2, 2, 2, 2}
+    end
+
+    test "resolves the real client past a proxy that obfuscates the hop before it" do
+      head = [{"forwarded", "for=6.6.6.6, for=2.2.2.2, for=_hidden"}]
+
+      opts = [
+        strategy: {RemoteIp.Strategies.RightmostTrustedCount, header: "forwarded", count: 2}
+      ]
+
+      assert RemoteIp.from(head, opts) == {2, 2, 2, 2}
+    end
+
+    test "raises at init when the :strategy is misconfigured" do
+      opts = [strategy: {RemoteIp.Strategies.RightmostTrustedCount, header: "x-forwarded-for", count: 0}]
+      assert_raise ArgumentError, fn -> RemoteIp.init(opts) end
+    end
+  end
+
   defmodule App do
     use Plug.Router
 

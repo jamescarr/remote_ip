@@ -91,6 +91,8 @@ defmodule RemoteIp do
   * `:parsers` - a map from header names to custom parser modules
   * `:clients` - a list of known client IPs, either plain or in CIDR notation
   * `:proxies` - a list of known proxy IPs, either plain or in CIDR notation
+  * `:strategy` - the strategy used to pick the remote IP (see
+    `RemoteIp.Strategy`)
 
   You can specify any option using a tuple of `{module, function_name,
   arguments}`, which will be called dynamically at runtime to get the
@@ -226,63 +228,14 @@ defmodule RemoteIp do
 
   defp ip_from(headers, opts) do
     opts = options_from(opts)
-    client_from(ips_from(headers, opts), opts)
+    {module, strategy_opts} = opts[:strategy]
+    module.find(headers, Keyword.merge(opts, strategy_opts))
   end
 
   defp options_from(opts) do
     debug :options do
       RemoteIp.Options.unpack(opts)
     end
-  end
-
-  defp ips_from(headers, opts) do
-    debug :ips do
-      headers = forwarding_from(headers, opts)
-      RemoteIp.Headers.parse(headers, opts[:parsers])
-    end
-  end
-
-  defp forwarding_from(headers, opts) do
-    debug :forwarding do
-      debug(:headers, do: headers) |> RemoteIp.Headers.take(opts[:headers])
-    end
-  end
-
-  defp client_from(ips, opts) do
-    Enum.reverse(ips) |> Enum.find(&client?(&1, opts))
-  end
-
-  defp client?(ip, opts) do
-    type(ip, opts) in [:client, :unknown]
-  end
-
-  # https://en.wikipedia.org/wiki/Loopback
-  # https://en.wikipedia.org/wiki/Private_network
-  # https://en.wikipedia.org/wiki/Reserved_IP_addresses
-  @reserved ~w[
-    127.0.0.0/8
-    ::1/128
-    fc00::/7
-    10.0.0.0/8
-    172.16.0.0/12
-    192.168.0.0/16
-  ] |> Enum.map(&RemoteIp.Block.parse!/1)
-
-  defp type(ip, opts) do
-    debug :type, [ip] do
-      ip = RemoteIp.Block.encode(ip)
-
-      cond do
-        opts[:clients] |> contains?(ip) -> :client
-        opts[:proxies] |> contains?(ip) -> :proxy
-        @reserved |> contains?(ip) -> :reserved
-        true -> :unknown
-      end
-    end
-  end
-
-  defp contains?(blocks, ip) do
-    Enum.any?(blocks, &RemoteIp.Block.contains?(&1, ip))
   end
 
   defp add_metadata(remote_ip) do

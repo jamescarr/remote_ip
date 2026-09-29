@@ -360,4 +360,35 @@ defmodule RemoteIp.Parsers.ForwardedTest do
       assert [{1, 2, 3, 4}, {0, 0, 0, 0, 2, 3, 4, 5}, {3, 4, 5, 6}, {0, 0, 0, 0, 4, 5, 6, 7}] == Forwarded.parse(~S'for=1.2.3.4, for="[::2:3:4:5]";proto=http;host=example.com, proto=http;for=3.4.5.6;by=127.0.0.1, proto=http;host=example.com;for="[::4:5:6:7]"')
     end
   end
+
+  describe "parse_positions/1" do
+    test "ambiguous for= pairs are :invalid, not dropped" do
+      header = "for=1.2.3.4;for=2.3.4.5, for=3.4.5.6"
+      assert [:invalid, {:ok, {3, 4, 5, 6}}] == Forwarded.parse_positions(header)
+    end
+
+    test "elements without a for= pair are :invalid, not dropped" do
+      header = "for=1.2.3.4, by=2.3.4.5, for=3.4.5.6"
+      assert [{:ok, {1, 2, 3, 4}}, :invalid, {:ok, {3, 4, 5, 6}}] == Forwarded.parse_positions(header)
+    end
+
+    test "for=unknown is :invalid, not dropped" do
+      header = "for=1.2.3.4, for=unknown, for=3.4.5.6"
+      assert [{:ok, {1, 2, 3, 4}}, :invalid, {:ok, {3, 4, 5, 6}}] == Forwarded.parse_positions(header)
+    end
+
+    test "obfuscated for= is :invalid, not dropped" do
+      header = "for=1.2.3.4, for=_hidden, for=3.4.5.6"
+      assert [{:ok, {1, 2, 3, 4}}, :invalid, {:ok, {3, 4, 5, 6}}] == Forwarded.parse_positions(header)
+    end
+
+    test "a header that fails to parse at all yields no positions" do
+      assert [] == Forwarded.parse_positions("not a forwarded header")
+    end
+
+    test "agrees with parse/1 when every entry is valid" do
+      header = "for=1.2.3.4, for=2.3.4.5, for=3.4.5.6"
+      assert Forwarded.parse(header) == for({:ok, ip} <- Forwarded.parse_positions(header), do: ip)
+    end
+  end
 end

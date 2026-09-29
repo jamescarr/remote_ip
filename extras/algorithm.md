@@ -104,3 +104,26 @@ Not only are known proxies' headers trusted, but also requests forwarded for [lo
 * IPv6 unique local address - `fc00::/7`
 
 These IPs are skipped automatically because they are used internally and are thus generally not the actual client address in production. However, if (say) your app is only deployed in a [VPN](https://en.wikipedia.org/wiki/Virtual_private_network)/[LAN](https://en.wikipedia.org/wiki/Local_area_network), then your clients might actually have these internal IPs. To prevent loopback/private addresses from being considered proxies, configure them as known clients using the `:clients` option. This goes for anything you have listed in `:proxies` as well. For example, you might say that a whole CIDR block belongs to proxies, but then carve out an exception for a single client in that block.
+
+## Strategies
+
+The algorithm described above is the default `RemoteIp.Strategies.RightmostNonPrivate` strategy. It assumes every reverse proxy between the internet and your server has a private/internal IP address. That assumption breaks if a public-IP proxy (a CDN/WAF edge, say) is *not* the last hop - i.e. another proxy sits between it and your server and also writes to the header. That next proxy appends the CDN's own public IP, and the rightmost non-private IP becomes the CDN's address instead of your client's.
+
+The `:strategy` option replaces the algorithm. Each strategy is a module under `RemoteIp.Strategies`:
+
+* `RightmostNonPrivate` - the default: scan right-to-left for the first non-proxy, non-private IP.
+* `RightmostTrustedRange` - scan right-to-left, skipping every IP in `:proxies`; use when your trusted proxies' IP ranges are known (including public ones).
+* `RightmostTrustedCount` - return the IP a fixed number of positions from the right; use when you know how many trusted proxies append to the header.
+* `LeftmostNonPrivate` - scan left-to-right for the first non-proxy, non-private IP; trivially spoofable, so only for non-security needs.
+* `SingleIpHeader` - read a single-IP header (e.g. `X-Real-IP`) rather than a comma-separated list.
+* `Chain` - try a list of strategies in order, returning the first that resolves.
+
+For example, resolving `X-Forwarded-For` behind Cloudflare and an internal proxy, given all of Cloudflare's published ranges (`103.21.244.0/22` is only one of several) plus the internal proxy's own range in `:proxies`:
+
+```elixir
+plug RemoteIp,
+  strategy: {RemoteIp.Strategies.RightmostTrustedRange, header: "x-forwarded-for"},
+  proxies: ["103.21.244.0/22", "..."]
+```
+
+Much of this is informed by the article [The perils of the "real" client IP](https://adam-p.ca/blog/2022/03/x-forwarded-for/), which is strongly recommended reading.

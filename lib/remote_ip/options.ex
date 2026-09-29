@@ -3,6 +3,7 @@ defmodule RemoteIp.Options do
   @parsers %{"forwarded" => RemoteIp.Parsers.Forwarded}
   @proxies []
   @clients []
+  @strategy {RemoteIp.Strategies.RightmostNonPrivate, []}
 
   @moduledoc """
   The keyword options given to `RemoteIp.init/1` or `RemoteIp.from/2`.
@@ -144,6 +145,60 @@ defmodule RemoteIp.Options do
   network, you might actually consider addresses in the `10.x.x.x` block to be
   clients. You could permit the entire block with `"10.0.0.0/8"`, or even
   specific IPs in this range like `"10.1.2.3"`.
+
+  ## `:strategy`
+
+  The `:strategy` option selects the algorithm used to pick the remote IP out
+  of the parsed headers. It should be either a module implementing the
+  `RemoteIp.Strategy` behaviour, or a `{module, options}` tuple. The default is
+
+
+  ```elixir
+  #{inspect(@strategy, pretty: true)}
+  ```
+
+  which preserves the plug's historical behaviour: parse every configured
+  header and return the rightmost non-proxy, non-private IP.
+
+  That default breaks if a public-IP proxy (such as Cloudflare or another
+  CDN/WAF) is not the last hop - i.e. another proxy sits between it and your
+  server and also writes to the header, appending the CDN's own public IP.
+  List every trusted proxy's IP ranges (including the CDN's full published
+  range list - `103.21.244.0/22` below is only one of Cloudflare's several)
+  in `:proxies` and switch to the trusted-range strategy:
+
+  ```elixir
+  plug RemoteIp,
+    strategy: {RemoteIp.Strategies.RightmostTrustedRange,
+               header: "x-forwarded-for"},
+    proxies: ["103.21.244.0/22", "..."]
+  ```
+
+  You can also compose multiple strategies with `RemoteIp.Strategies.Chain`.
+  For example, to prefer Cloudflare's `CF-Connecting-IP` header and fall back
+  to `X-Forwarded-For`:
+
+  ```elixir
+  plug RemoteIp,
+    strategy: {RemoteIp.Strategies.Chain, strategies: [
+      {RemoteIp.Strategies.SingleIpHeader, header: "cf-connecting-ip"},
+      {RemoteIp.Strategies.RightmostTrustedRange, header: "x-forwarded-for"}
+    ]},
+    proxies: ["103.21.244.0/22", "..."]
+  ```
+
+  Every strategy validates its own options via `c:RemoteIp.Strategy.validate/1`
+  - for instance, `RightmostTrustedRange` and `RightmostTrustedCount` require
+  an explicit `:header` of `"x-forwarded-for"` or `"forwarded"` (falling back
+  to the ambiguous, multi-header `:headers` default would defeat the point of
+  a "trusted" strategy), and none of the strategies accept `:headers`,
+  `:parsers`, `:proxies`, or `:clients` nested inside their own options - set
+  those at the top level instead. An invalid strategy raises `ArgumentError`,
+  at `c:Plug.init/1` time for a literal `:strategy`, or on first use for one
+  sourced from an MFA.
+
+  See `RemoteIp.Strategy` and the modules under `RemoteIp.Strategies` for the
+  available strategies and their options.
 
   ## Runtime options
 
@@ -299,6 +354,7 @@ defmodule RemoteIp.Options do
   def default(:parsers), do: @parsers
   def default(:proxies), do: @proxies
   def default(:clients), do: @clients
+  def default(:strategy), do: @strategy
 
   @doc """
   Processes keyword options, delaying the evaluation of MFAs until `unpack/1`.
@@ -309,7 +365,8 @@ defmodule RemoteIp.Options do
       headers: pack(options, :headers),
       parsers: pack(options, :parsers),
       proxies: pack(options, :proxies),
-      clients: pack(options, :clients)
+      clients: pack(options, :clients),
+      strategy: pack(options, :strategy)
     ]
   end
 
@@ -329,7 +386,8 @@ defmodule RemoteIp.Options do
       headers: unpack(options, :headers),
       parsers: unpack(options, :parsers),
       proxies: unpack(options, :proxies),
-      clients: unpack(options, :clients)
+      clients: unpack(options, :clients),
+      strategy: unpack(options, :strategy)
     ]
   end
 
@@ -354,5 +412,15 @@ defmodule RemoteIp.Options do
 
   defp evaluate(:clients, clients) do
     clients |> Enum.map(&RemoteIp.Block.parse!/1)
+  end
+
+  defp evaluate(:strategy, strategy) do
+    case RemoteIp.Strategy.validate_spec(strategy) do
+      {:ok, spec} ->
+        spec
+
+      {:error, message} ->
+        raise ArgumentError, "invalid :strategy option: #{message}"
+    end
   end
 end

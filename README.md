@@ -48,6 +48,42 @@ RemoteIp.from(x_headers)
 
 See the [documentation](https://hexdocs.pm/remote_ip) for full details on usage, configuration options, and troubleshooting.
 
+## Strategies
+
+By default, `RemoteIp` resolves the client IP using the *rightmost non-private* strategy: it parses every configured forwarding header, then scans right-to-left for the first IP that is neither a known proxy nor a loopback/private address. This is correct when every reverse proxy in front of your server has a private/internal IP - which is the common case, e.g. an internal load balancer reaching your app over its VPC's private address space.
+
+It is **not** correct when a proxy with a *public* IP sits in front of another proxy that also writes to the header - for example, an internal load balancer appending the IP of the CDN/WAF (Cloudflare, Fastly, …) that's in front of it. In that case the rightmost non-private IP is the CDN's own public IP, not your client's. Configure the `:strategy` option to match your infrastructure:
+
+```elixir
+plug RemoteIp,
+  strategy: {RemoteIp.Strategies.RightmostTrustedRange, header: "x-forwarded-for"},
+  proxies: ["103.21.244.0/22", "..."]
+```
+
+Here `:proxies` must list the IP ranges of *every* proxy you trust, including the CDN's full published range list (`103.21.244.0/22` is only one of Cloudflare's several ranges) and any internal proxies. `RightmostTrustedRange` skips those ranges and returns the first remaining IP, which is the one added by the first proxy you control. `RightmostTrustedRange` and `RightmostTrustedCount` require an explicit `:header` of `"x-forwarded-for"` or `"forwarded"` - they raise at startup if it's missing, to avoid silently falling back to a spoofable, ambiguous mix of headers.
+
+The available strategies (all under `RemoteIp.Strategies`) are:
+
+* `RightmostNonPrivate` - the secure default for private-IP proxies.
+* `RightmostTrustedRange` - skips IPs listed in `:proxies`; use for public-IP proxies.
+* `RightmostTrustedCount` - returns the IP `count` positions from the right; use when you know how many trusted proxies append to the header.
+* `LeftmostNonPrivate` - the closest-to-the-client IP; trivially spoofable, so only for non-security needs like geolocation.
+* `SingleIpHeader` - reads a single-IP header such as `X-Real-IP` or `CF-Connecting-IP`.
+* `Chain` - tries a list of strategies in order, returning the first that resolves.
+
+Chain several strategies to prefer one header over another:
+
+```elixir
+plug RemoteIp,
+  strategy: {RemoteIp.Strategies.Chain, strategies: [
+    {RemoteIp.Strategies.SingleIpHeader, header: "cf-connecting-ip"},
+    {RemoteIp.Strategies.RightmostTrustedRange, header: "x-forwarded-for"}
+  ]},
+  proxies: ["103.21.244.0/22"]
+```
+
+For a deeper discussion of the tradeoffs, see [the algorithm](extras/algorithm.md) and the excellent article [The perils of the "real" client IP](https://adam-p.ca/blog/2022/03/x-forwarded-for/).
+
 ## Motivation
 
 ### Problem: Your app is behind a proxy and you want to know the original client's IP address.

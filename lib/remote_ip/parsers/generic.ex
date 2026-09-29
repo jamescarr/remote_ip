@@ -46,7 +46,25 @@ defmodule RemoteIp.Parsers.Generic do
     end)
   end
 
-  defp parse_ip(string) do
+  @doc """
+  Parses a single IP address string.
+
+  This is the per-item primitive behind `parse/1`: it does not split on
+  commas, so it should be given one already-separated token. Exposed so other
+  parts of `RemoteIp` (such as strategies that need to know the *position* of
+  each item, not just the final flat list of valid IPs) can reuse the same
+  parsing logic instead of duplicating it.
+
+  ## Examples
+
+      iex> RemoteIp.Parsers.Generic.parse_ip("1.2.3.4")
+      {:ok, {1, 2, 3, 4}}
+
+      iex> RemoteIp.Parsers.Generic.parse_ip("nope")
+      {:error, :einval}
+  """
+
+  def parse_ip(string) do
     try do
       :inet.parse_strict_address(string |> to_charlist())
     rescue

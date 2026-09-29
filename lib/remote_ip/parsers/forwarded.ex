@@ -31,10 +31,59 @@ defmodule RemoteIp.Parsers.Forwarded do
     end
   end
 
+  @doc """
+  Like `parse/1`, but preserves the position of every forwarded-element,
+  including ones that don't resolve to exactly one IP address.
+
+  Each top-level, comma-separated forwarded-element becomes either `{:ok, ip}`
+  or `:invalid` (for elements with no `for=` pair, more than one, or one that
+  doesn't parse as an IP - including the `for=unknown` and obfuscated
+  `for=_identifier` forms allowed by RFC 7239 section 6.3).
+
+  This is used by strategies (such as
+  `RemoteIp.Strategies.RightmostTrustedRange` and
+  `RemoteIp.Strategies.RightmostTrustedCount`) that reason about the
+  *position* of each hop, where silently dropping an unparseable element would
+  shift every element after it into the wrong position.
+
+  If the header fails to parse at all, the result is `[]`, same as `parse/1`.
+
+  ## Examples
+
+      iex> RemoteIp.Parsers.Forwarded.parse_positions("for=1.2.3.4;by=2.3.4.5")
+      [{:ok, {1, 2, 3, 4}}]
+
+      iex> RemoteIp.Parsers.Forwarded.parse_positions("for=1.2.3.4, for=unknown, for=2.3.4.5")
+      [{:ok, {1, 2, 3, 4}}, :invalid, {:ok, {2, 3, 4, 5}}]
+
+      iex> RemoteIp.Parsers.Forwarded.parse_positions("invalid")
+      []
+  """
+
+  def parse_positions(header) do
+    case Combine.parse(header, forwarded()) do
+      [elements] -> Enum.map(elements, &position_from/1)
+      _ -> []
+    end
+  end
+
   defp parse_forwarded_for(pairs) do
     case fors_from(pairs) do
       [string] -> parse_ip(string)
       _ambiguous -> []
+    end
+  end
+
+  defp position_from(pairs) do
+    case fors_from(pairs) do
+      [string] ->
+        case parse_ip(string) do
+          [ip] -> {:ok, ip}
+          [] -> :invalid
+        end
+
+      _ambiguous ->
+        :invalid
     end
   end
 
